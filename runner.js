@@ -37,26 +37,41 @@ function maritime(args) {
   return new Promise(resolve => {
     const t0 = Date.now();
     execFile("maritime", [...args, "--json"], { timeout: 180000 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, elapsedMs: Date.now() - t0,
+      let response = null;
+      try { response = JSON.parse(stdout).response ?? null; } catch {}
+      resolve({ ok: !err, elapsedMs: Date.now() - t0, response,
                 stderr: (stderr || "").trim().slice(0, 300) });
     });
   });
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function report(sample) {
   // Local file is the source of truth; the station is best-effort.
   fs.appendFileSync(DATA_FILE, JSON.stringify(sample) + "\n");
   if (!STATION) return;
-  try {
-    const res = await fetch(STATION.replace(/\/$/, "") + "/ingest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json",
-                 ...(INGEST_KEY ? { "X-Ingest-Key": INGEST_KEY } : {}) },
-      body: JSON.stringify(sample),
-    });
-    if (!res.ok) console.error("  ingest rejected:", res.status, await res.text());
-  } catch (e) {
-    console.error("  ingest failed (will still continue):", e.message);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(STATION.replace(/\/$/, "") + "/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json",
+                   ...(INGEST_KEY ? { "X-Ingest-Key": INGEST_KEY } : {}) },
+        body: JSON.stringify(sample),
+      });
+      if (res.ok) return;
+      const text = await res.text();
+      if (res.status === 503 && attempt < 3) {
+        console.log(`  station asleep — waking it, retry ${attempt}/2 in 20s`);
+        await sleep(20000);
+        continue;
+      }
+      console.error("  ingest rejected:", res.status, text);
+      return;
+    } catch (e) {
+      console.error("  ingest failed (will still continue):", e.message);
+      return;
+    }
   }
 }
 
@@ -64,8 +79,9 @@ async function pingOnce(agent, kind) {
   const r = await maritime(["chat", agent, "ping"]);
   const sample = { ts: new Date().toISOString(), agent, kind,
                    elapsedMs: r.elapsedMs, ok: r.ok,
+                   ...(r.response != null ? { response: String(r.response).slice(0, 120) } : {}),
                    ...(r.ok ? {} : { error: r.stderr || "unknown" }) };
-  console.log(`  ${agent} ${kind}: ${r.elapsedMs}ms ok=${r.ok}`);
+  console.log(`  ${agent} ${kind}: ${r.elapsedMs}ms ok=${r.ok}${r.response ? ` reply="${String(r.response).slice(0, 40)}"` : ""}`);
   await report(sample);
 }
 
