@@ -17,12 +17,17 @@
 // (System Settings > prevent sleep, or run `caffeinate -i node runner.js ...`).
 
 const { execFile } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
-const STATION = process.argv[2];
-if (!STATION || !STATION.startsWith("http")) {
-  console.error("Usage: node runner.js https://YOUR-STATION-PUBLIC-URL");
+const DATA_FILE = process.env.DATA_FILE || path.join(process.cwd(), "data.jsonl");
+
+const STATION = process.argv[2] || "";
+if (STATION && !STATION.startsWith("http")) {
+  console.error("Usage: node runner.js [https://YOUR-STATION-PUBLIC-URL]");
   process.exit(1);
 }
+if (!STATION) console.log("No station URL given — recording locally only.");
 const SLEEPERS = (process.env.SLEEPERS || "sleeper-a,sleeper-b")
   .split(",").map(s => s.trim()).filter(Boolean);
 const CYCLE_MINUTES = parseFloat(process.env.CYCLE_MINUTES || "20");
@@ -39,6 +44,9 @@ function maritime(args) {
 }
 
 async function report(sample) {
+  // Local file is the source of truth; the station is best-effort.
+  fs.appendFileSync(DATA_FILE, JSON.stringify(sample) + "\n");
+  if (!STATION) return;
   try {
     const res = await fetch(STATION.replace(/\/$/, "") + "/ingest", {
       method: "POST",
